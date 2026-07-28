@@ -19,7 +19,8 @@ void usage() {
       << "usage:\n"
       << "  wal_tool dump <wal>\n"
       << "  wal_tool workload <wal> <oracle> [sleep-us]\n"
-      << "  wal_tool benchmark <wal> <transactions> <ops-per-transaction>\n";
+      << "  wal_tool benchmark <wal> <transactions> <ops-per-transaction> "
+         "[group-size]\n";
 }
 
 void repair_oracle_tail(const std::string& path) {
@@ -118,18 +119,27 @@ int workload(const std::string& wal_path, const std::string& oracle_path,
 }
 
 int benchmark(const std::string& path, std::size_t transaction_count,
-              std::size_t operations_per_transaction) {
+              std::size_t operations_per_transaction,
+              std::size_t group_size) {
+  if (group_size == 0) {
+    throw std::invalid_argument("group size must be positive");
+  }
   const auto started = std::chrono::steady_clock::now();
   {
     wal::WriteAheadLog log(path, true);
-    for (std::size_t tx_index = 0; tx_index < transaction_count; ++tx_index) {
-      const std::uint64_t transaction_id = log.begin();
-      for (std::size_t op = 0; op < operations_per_transaction; ++op) {
-        log.put(transaction_id,
-                "key-" + std::to_string(tx_index) + "-" + std::to_string(op),
-                "value-" + std::to_string(tx_index));
+    for (std::size_t base = 0; base < transaction_count; base += group_size) {
+      std::vector<std::uint64_t> transactions;
+      const std::size_t end = std::min(transaction_count, base + group_size);
+      for (std::size_t tx_index = base; tx_index < end; ++tx_index) {
+        const std::uint64_t transaction_id = log.begin();
+        for (std::size_t op = 0; op < operations_per_transaction; ++op) {
+          log.put(transaction_id,
+                  "key-" + std::to_string(tx_index) + "-" + std::to_string(op),
+                  "value-" + std::to_string(tx_index));
+        }
+        transactions.push_back(transaction_id);
       }
-      log.commit(transaction_id);
+      log.commit_batch(transactions);
     }
   }
   const auto elapsed = std::chrono::duration<double>(
@@ -140,6 +150,7 @@ int benchmark(const std::string& path, std::size_t transaction_count,
       wal::WriteAheadLog::recover(path, false);
   std::cout << "transactions=" << transaction_count
             << " ops_per_tx=" << operations_per_transaction
+            << " group_size=" << group_size
             << " seconds=" << elapsed.count()
             << " tx_per_second=" << transactions_per_second
             << " recovered_keys=" << recovered.state.size() << "\n";
@@ -158,9 +169,11 @@ int main(int argc, char** argv) {
       const int sleep_us = argc == 5 ? std::stoi(argv[4]) : 0;
       return workload(argv[2], argv[3], sleep_us);
     }
-    if (argc == 5 && std::string(argv[1]) == "benchmark") {
+    if ((argc == 5 || argc == 6) &&
+        std::string(argv[1]) == "benchmark") {
       return benchmark(argv[2], std::stoull(argv[3]),
-                       std::stoull(argv[4]));
+                       std::stoull(argv[4]),
+                       argc == 6 ? std::stoull(argv[5]) : 1);
     }
   } catch (const std::exception& error) {
     std::cerr << "error: " << error.what() << "\n";

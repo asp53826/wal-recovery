@@ -50,6 +50,7 @@ class WriteAheadLog {
            const std::string& value);
   void erase(std::uint64_t transaction_id, const std::string& key);
   void commit(std::uint64_t transaction_id);
+  void commit_batch(const std::vector<std::uint64_t>& transaction_ids);
 
   const std::string& path() const noexcept { return path_; }
 
@@ -68,4 +69,3 @@ class WriteAheadLog {
 };
 
 }  // namespace wal
-

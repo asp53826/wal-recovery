@@ -184,12 +184,30 @@ void WriteAheadLog::erase(std::uint64_t transaction_id,
 }
 
 void WriteAheadLog::commit(std::uint64_t transaction_id) {
-  require_active(transaction_id);
-  append(RecordType::Commit, transaction_id, {}, {});
+  commit_batch({transaction_id});
+}
+
+void WriteAheadLog::commit_batch(
+    const std::vector<std::uint64_t>& transaction_ids) {
+  if (transaction_ids.empty()) {
+    throw std::invalid_argument("commit batch must not be empty");
+  }
+  std::unordered_set<std::uint64_t> unique;
+  for (const std::uint64_t transaction_id : transaction_ids) {
+    require_active(transaction_id);
+    if (!unique.insert(transaction_id).second) {
+      throw std::invalid_argument("commit batch contains duplicate transaction");
+    }
+  }
+  for (const std::uint64_t transaction_id : transaction_ids) {
+    append(RecordType::Commit, transaction_id, {}, {});
+  }
   if (::fsync(fd_) != 0) {
     throw_system_error("fsync");
   }
-  active_transactions_.erase(transaction_id);
+  for (const std::uint64_t transaction_id : transaction_ids) {
+    active_transactions_.erase(transaction_id);
+  }
 }
 
 void WriteAheadLog::require_active(std::uint64_t transaction_id) const {

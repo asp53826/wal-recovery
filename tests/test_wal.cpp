@@ -223,6 +223,51 @@ void test_every_truncation_of_a_transaction_is_atomic() {
   remove_if_present(cut_path);
 }
 
+void test_group_commit_recovers_every_transaction() {
+  const std::string path = temp_path("group-commit");
+  remove_if_present(path);
+  {
+    wal::WriteAheadLog log(path);
+    std::vector<std::uint64_t> transactions;
+    for (int index = 0; index < 32; ++index) {
+      const auto transaction = log.begin();
+      log.put(transaction, "key-" + std::to_string(index),
+              "value-" + std::to_string(index));
+      transactions.push_back(transaction);
+    }
+    log.commit_batch(transactions);
+  }
+  const auto recovered = wal::WriteAheadLog::recover(path);
+  CHECK(recovered.committed_transactions == 32);
+  CHECK(recovered.state.size() == 32);
+  for (int index = 0; index < 32; ++index) {
+    CHECK(recovered.state.at("key-" + std::to_string(index)) ==
+          "value-" + std::to_string(index));
+  }
+  remove_if_present(path);
+}
+
+void test_invalid_group_commit_appends_no_commits() {
+  const std::string path = temp_path("invalid-group");
+  remove_if_present(path);
+  {
+    wal::WriteAheadLog log(path);
+    const auto transaction = log.begin();
+    log.put(transaction, "key", "value");
+    bool rejected = false;
+    try {
+      log.commit_batch({transaction, 999});
+    } catch (const std::logic_error&) {
+      rejected = true;
+    }
+    CHECK(rejected);
+  }
+  const auto recovered = wal::WriteAheadLog::recover(path);
+  CHECK(recovered.committed_transactions == 0);
+  CHECK(recovered.state.empty());
+  remove_if_present(path);
+}
+
 void test_invalid_transaction_use_is_rejected() {
   const std::string path = temp_path("invalid");
   remove_if_present(path);
@@ -255,6 +300,8 @@ int main() {
   test_truncated_tail_stops_before_partial_transaction();
   test_checksum_corruption_is_not_replayed();
   test_every_truncation_of_a_transaction_is_atomic();
+  test_group_commit_recovers_every_transaction();
+  test_invalid_group_commit_appends_no_commits();
   test_invalid_transaction_use_is_rejected();
 
   if (failures != 0) {

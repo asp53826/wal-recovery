@@ -38,8 +38,9 @@ crash-test: $(TOOL)
 		--rounds $${CRASH_ROUNDS:-200}
 
 benchmark: $(TOOL)
-	rm -f $(BUILD_DIR)/benchmark.wal
-	./$(TOOL) benchmark $(BUILD_DIR)/benchmark.wal 1000 4
+	rm -f $(BUILD_DIR)/benchmark-single.wal $(BUILD_DIR)/benchmark-group.wal
+	./$(TOOL) benchmark $(BUILD_DIR)/benchmark-single.wal 1000 4 1
+	./$(TOOL) benchmark $(BUILD_DIR)/benchmark-group.wal 1000 4 16
 
 clean:
 	rm -rf $(BUILD_DIR)
