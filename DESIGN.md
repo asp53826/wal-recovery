@@ -37,9 +37,28 @@ boundaries, recovers the WAL, and verifies:
 
 1. every oracle transaction is present;
 2. no partially written transaction is visible;
-3. the recovered state matches replaying the oracle prefix.
+3. every recovered record has a complete, internally consistent key/value pair.
 
 The oracle is intentionally conservative: a crash after WAL `fsync` but before
 oracle `fsync` may leave an extra valid transaction in the WAL. The harness
 records that as an ambiguous success window rather than data loss.
 
+Before each writer restart, an incomplete oracle line is truncated. This keeps
+the independent acknowledgement history prefix-valid even when the process is
+killed during the oracle write itself.
+
+## What the fault campaign injects
+
+With `WAL_SPLIT_WRITES=1`, each logical record is emitted in seven-byte chunks
+with a short delay between chunks. The Python parent:
+
+1. starts the writer;
+2. waits for a seeded random interval;
+3. sends uncatchable `SIGKILL`;
+4. parses the WAL without repairing it;
+5. compares recovered state with the synced acknowledgement oracle;
+6. restarts the writer, whose opening recovery repairs any invalid tail.
+
+The campaign therefore reaches incomplete headers, incomplete payloads,
+incomplete checksums, clean uncommitted transactions, and the small interval
+between WAL synchronization and oracle synchronization.

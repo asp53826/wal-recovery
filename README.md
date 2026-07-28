@@ -1,6 +1,8 @@
 # wal-recovery
 
-A crash-safe write-ahead log built from scratch in C++17.
+A dependency-free, crash-safe write-ahead log built from scratch in C++17.
+
+[![CI](https://github.com/asp53826/wal-recovery/actions/workflows/ci.yml/badge.svg)](https://github.com/asp53826/wal-recovery/actions/workflows/ci.yml)
 
 The project is designed around one falsifiable claim:
 
@@ -8,46 +10,88 @@ The project is designed around one falsifiable claim:
 > must reproduce it after a crash. Transactions without a durable commit record
 > must never become visible.
 
-## What this repository will prove
+## Verified properties
 
-- length-delimited, checksummed binary records detect torn and corrupted writes;
-- multi-operation transactions become visible atomically;
-- recovery replays only transactions with a valid commit record;
-- an invalid tail is truncated to the last verified record boundary;
-- a kill-at-random-points harness repeatedly crashes a writer and compares the
-  recovered state with an independently persisted acknowledgement oracle.
+- `BEGIN`, `PUT`, `DELETE`, and `COMMIT` records with monotonic transaction IDs;
+- CRC32-protected, length-delimited records detect torn and corrupted writes;
+- multi-operation transactions become visible atomically during replay;
+- recovery applies only transactions ending in a checksum-valid commit record;
+- invalid tails can be truncated to the last verified record boundary;
+- commit acknowledgement occurs only after the commit record is passed to
+  `fsync`;
+- a deterministic fault campaign sends `SIGKILL` during deliberately split
+  writes and compares recovery with an independently synced oracle.
 
 ## Record format
 
-Every record is self-delimiting and independently verifiable:
+Every record is self-delimiting and independently verifiable. Integer fields
+are little-endian.
 
 ```text
-+----------------+---------+------+--------+---------+-----------+----------+
-| magic (4 bytes)| version | type | tx id  | key len | value len | payload  |
-+----------------+---------+------+--------+---------+-----------+----------+
-| CRC32 over header fields and payload (4 bytes)                           |
-+----------------------------------------------------------------------------+
++----------+---------+------+----------+-------+---------+-----------+
+| magic[4] | version | type | reserved | tx_id | key_len | value_len |
++----------+---------+------+----------+-------+---------+-----------+
+| key bytes | value bytes | CRC32(header + payload)                     |
++------------------------------------------------------------------------+
 ```
 
-The first implementation milestone targets:
+Recovery never searches forward for another magic number after corruption.
+Doing so could silently accept records after an ordering gap. It stops at the
+first invalid record and, in repair mode, truncates there.
 
-1. `BEGIN`, `PUT`, `DELETE`, and `COMMIT` records;
-2. `fsync`-backed commit acknowledgement;
-3. deterministic replay into an in-memory key/value state;
-4. checksum, truncation, and partial-record tests;
-5. a reproducible crash-torture benchmark.
+## Build and verify
 
-## Build target
-
-The code intentionally uses only the C++17 standard library and POSIX file
-primitives available on macOS and Linux. No database library is hidden behind
-the interface.
+The only requirements are a C++17 compiler, POSIX file primitives, Make, and
+Python 3 for the external crash orchestrator.
 
 ```bash
 make test
 make crash-test
+make benchmark
 ```
 
-Implementation is in progress. Measured recovery and crash-injection results
-will replace this note when the first complete milestone is verified.
+`make test` includes an exhaustive byte-by-byte truncation test over a complete
+transaction. `make crash-test` runs 200 process crashes by default; set
+`CRASH_ROUNDS` to change the campaign length.
 
+```bash
+CRASH_ROUNDS=1000 make crash-test
+```
+
+## Measured baseline
+
+Recorded on an Apple M2 Pro running macOS, using Apple Clang 17:
+
+| Verification | Result |
+|---|---:|
+| Unit assertions | 375 passed |
+| Randomized `SIGKILL` rounds | 200 |
+| Acknowledged transactions at final high-water mark | 406 |
+| Torn/corrupt tail observations | 154 |
+| Acknowledged transactions lost | **0** |
+| Partial transactions made visible | **0** |
+| 1,000 transactions, four writes each | 16,127.9 tx/s |
+| Keys recovered after benchmark | 4,000 |
+
+The benchmark performs one `fsync` per transaction and is a local baseline, not
+a cross-machine performance claim. The crash test models abrupt process death.
+Durability across host power loss still depends on the operating system,
+filesystem, storage hardware, and their `fsync` guarantees.
+
+## Tools
+
+```bash
+# Recover and print summary/state without modifying the file
+./build/wal_tool dump data.wal
+
+# Append transactions forever; used by the crash orchestrator
+./build/wal_tool workload data.wal acknowledgements.tsv
+
+# Run a synchronous-commit benchmark
+./build/wal_tool benchmark data.wal 1000 4
+```
+
+The implementation uses no database, serialization, checksum, or test
+framework behind the interface. The record codec, CRC32, transaction state
+machine, recovery scanner, repair path, and fault harness are all contained in
+this repository.
