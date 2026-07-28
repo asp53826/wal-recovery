@@ -6,6 +6,7 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <unistd.h>
@@ -179,6 +180,49 @@ void test_checksum_corruption_is_not_replayed() {
   remove_if_present(path);
 }
 
+void test_every_truncation_of_a_transaction_is_atomic() {
+  const std::string source_path = temp_path("all-cuts-source");
+  const std::string cut_path = temp_path("all-cuts-candidate");
+  remove_if_present(source_path);
+  remove_if_present(cut_path);
+
+  {
+    wal::WriteAheadLog log(source_path);
+    const auto tx = log.begin();
+    log.put(tx, "durable", "yes");
+    log.commit(tx);
+  }
+  const std::uint64_t durable_boundary =
+      wal::WriteAheadLog::recover(source_path).valid_bytes;
+  {
+    wal::WriteAheadLog log(source_path);
+    const auto tx = log.begin();
+    log.put(tx, "must-be-atomic", "complete-or-absent");
+    log.commit(tx);
+  }
+
+  std::ifstream source(source_path, std::ios::binary);
+  const std::vector<char> bytes((std::istreambuf_iterator<char>(source)),
+                                std::istreambuf_iterator<char>());
+  CHECK(bytes.size() > durable_boundary);
+
+  for (std::size_t cut = static_cast<std::size_t>(durable_boundary) + 1;
+       cut < bytes.size(); ++cut) {
+    {
+      std::ofstream candidate(cut_path,
+                              std::ios::binary | std::ios::trunc);
+      candidate.write(bytes.data(), static_cast<std::streamsize>(cut));
+    }
+    const auto recovered = wal::WriteAheadLog::recover(cut_path);
+    CHECK(recovered.state.size() == 1);
+    CHECK(recovered.state.at("durable") == "yes");
+    CHECK(recovered.state.find("must-be-atomic") == recovered.state.end());
+  }
+
+  remove_if_present(source_path);
+  remove_if_present(cut_path);
+}
+
 void test_invalid_transaction_use_is_rejected() {
   const std::string path = temp_path("invalid");
   remove_if_present(path);
@@ -210,6 +254,7 @@ int main() {
   test_transaction_ids_continue_after_restart();
   test_truncated_tail_stops_before_partial_transaction();
   test_checksum_corruption_is_not_replayed();
+  test_every_truncation_of_a_transaction_is_atomic();
   test_invalid_transaction_use_is_rejected();
 
   if (failures != 0) {
@@ -219,4 +264,3 @@ int main() {
   std::cout << assertions << " assertions passed\n";
   return 0;
 }
-

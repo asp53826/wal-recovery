@@ -34,7 +34,8 @@ test: $(TEST)
 	./$(TEST)
 
 crash-test: $(TOOL)
-	python3 scripts/crash_torture.py --binary ./$(TOOL)
+	python3 scripts/crash_torture.py --binary ./$(TOOL) \
+		--rounds $${CRASH_ROUNDS:-200}
 
 benchmark: $(TOOL)
 	rm -f $(BUILD_DIR)/benchmark.wal

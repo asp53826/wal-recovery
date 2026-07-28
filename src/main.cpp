@@ -1,13 +1,16 @@
 #include "wal/wal.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <fcntl.h>
 #include <iostream>
+#include <iterator>
 #include <stdexcept>
 #include <string>
-#include <thread>
+#include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -17,6 +20,51 @@ void usage() {
       << "  wal_tool dump <wal>\n"
       << "  wal_tool workload <wal> <oracle> [sleep-us]\n"
       << "  wal_tool benchmark <wal> <transactions> <ops-per-transaction>\n";
+}
+
+void repair_oracle_tail(const std::string& path) {
+  const int fd = ::open(path.c_str(), O_CREAT | O_RDWR, 0644);
+  if (fd < 0) {
+    throw std::runtime_error("failed to open oracle for repair");
+  }
+
+  struct stat info {};
+  if (::fstat(fd, &info) != 0) {
+    ::close(fd);
+    throw std::runtime_error("failed to inspect oracle");
+  }
+  const std::size_t size = static_cast<std::size_t>(info.st_size);
+  if (size == 0) {
+    ::close(fd);
+    return;
+  }
+
+  std::vector<char> bytes(size);
+  const ssize_t count = ::pread(fd, bytes.data(), bytes.size(), 0);
+  if (count != static_cast<ssize_t>(bytes.size())) {
+    ::close(fd);
+    throw std::runtime_error("failed to read oracle");
+  }
+
+  std::size_t valid_size = bytes.size();
+  if (bytes.back() != '\n') {
+    const auto newline = std::find(bytes.rbegin(), bytes.rend(), '\n');
+    valid_size = newline == bytes.rend()
+                     ? 0
+                     : bytes.size() -
+                           static_cast<std::size_t>(
+                               std::distance(bytes.rbegin(), newline));
+  }
+  if (valid_size != bytes.size() &&
+      ::ftruncate(fd, static_cast<off_t>(valid_size)) != 0) {
+    ::close(fd);
+    throw std::runtime_error("failed to truncate oracle tail");
+  }
+  if (valid_size != bytes.size() && ::fsync(fd) != 0) {
+    ::close(fd);
+    throw std::runtime_error("failed to sync repaired oracle");
+  }
+  ::close(fd);
 }
 
 void oracle_append(const std::string& path, std::uint64_t transaction_id,
@@ -54,6 +102,7 @@ int dump(const std::string& path) {
 
 int workload(const std::string& wal_path, const std::string& oracle_path,
              int sleep_microseconds) {
+  repair_oracle_tail(oracle_path);
   wal::WriteAheadLog log(wal_path, true);
   for (;;) {
     const std::uint64_t transaction_id = log.begin();
@@ -120,4 +169,3 @@ int main(int argc, char** argv) {
   usage();
   return 2;
 }
-
